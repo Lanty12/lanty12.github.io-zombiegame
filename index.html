@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Juego FPS con Cubos Verdes (Control A/D Invertido)</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a1a1a; cursor: default; }
+        canvas { display: block; }
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.4);
+        }
+        .overlay-text {
+            background-color: rgba(0,0,0,0.8);
+            padding: 25px 30px;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 17px; 
+            pointer-events: auto; 
+            max-width: 430px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+        }
+        .overlay-text h2 { margin-top: 0; margin-bottom: 18px; font-size: 24px; color: #61dafb;}
+        .overlay-text p { margin-bottom: 10px; line-height: 1.65; }
+        .overlay-text button {
+            padding: 10px 25px;
+            font-size: 16px;
+            margin-top: 20px;
+            cursor: pointer;
+            background-color: #61dafb; 
+            color: #20232a; 
+            border: none;
+            border-radius: 6px;
+            transition: background-color 0.2s, transform 0.1s;
+            text-transform: uppercase;
+            font-weight: bold;
+            letter-spacing: 0.5px;
+        }
+        .overlay-text button:hover {
+            background-color: #52c8e8; 
+            transform: scale(1.03);
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 2px; height: 15px; background-color: rgba(220,220,100,0.7); transform: translate(-50%, -50%); 
+        }
+        #crosshair::before { 
+            content: ''; position: absolute; top: 50%; left: 50%; width: 15px; height: 2px; background-color: rgba(220,220,100,0.7); transform: translate(-50%, -50%); 
+        }
+        .game-info { 
+            position: absolute;
+            font-size: 20px;
+            background-color: rgba(0,0,0,0.6);
+            padding: 8px 12px;
+            border-radius: 6px;
+        }
+        #score-info { top: 15px; left: 15px; }
+        #ammo-info { bottom: 15px; right: 15px; }
+    </style>
+</head>
+<body>
+    <div id="ui-container">
+        <div id="tutorial" class="overlay-text">
+            <h2>Tutorial FPS</h2>
+            <p><strong>W, A, S, D:</strong> Moverse (A/D Invertido)</p>
+            <p><strong>Espacio:</strong> Saltar</p>
+            <p><strong>Ratón:</strong> Mirar</p>
+            <p><strong>Clic Izquierdo:</strong> Disparar</p>
+            <p><strong>ESC:</strong> Liberar cursor / Pausa</p>
+            <button id="start-button">¡Comenzar!</button>
+        </div>
+        <div id="game-over" class="overlay-text" style="display: none;">
+            <h2>¡Has Sido Derrotado!</h2>
+            <p>Puntuación Final: <span id="final-score">0</span></p>
+            <button id="restart-button">Jugar de Nuevo</button>
+        </div>
+    </div>
+    <div id="crosshair" style="display: none;"></div>
+    <div id="score-info" class="game-info" style="display: none;">Puntuación: 0</div>
+    <div id="ammo-info" class="game-info" style="display:none;">Balas: 10/10</div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+        }
+    }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- Variables y constantes (sin cambios) ---
+        let scene, camera, renderer;
+        let playerBody;
+        let bullets = [];
+        let zombies = [];
+        const environmentObjects = []; 
+        const playerHeight = 1.8;
+        const playerRadius = 0.35; 
+        const playerSpeed = 0.11;
+        const playerLookSpeed = 0.002;
+        let playerVelocityY = 0;
+        const gravity = 0.009;
+        const jumpForce = 0.23;
+        let isJumping = false;
+        let onPlatform = null; 
+        const groundYLevel = 0;
+        let score = 0;
+        let gameRunning = false;
+        let pointerLocked = false;
+        const moveState = { forward: 0, backward: 0, left: 0, right: 0 };
+        let euler = new THREE.Euler(0, 0, 0, 'YXZ');
+        const PI_2 = Math.PI / 2;
+        const bulletSpeed = 1.9;
+        let zombieSpeed = 0.022;
+        const initialZombieHealth = 3;
+        let maxAmmo = 10;
+        let currentAmmo = maxAmmo;
+        const zombieCubeSize = 1.2; 
+        const zombieBodyHeight = playerHeight * 0.9;
+        const tutorialEl = document.getElementById('tutorial');
+        const startButton = document.getElementById('start-button');
+        const gameOverEl = document.getElementById('game-over');
+        const finalScoreEl = document.getElementById('final-score');
+        const restartButton = document.getElementById('restart-button');
+        const crosshairEl = document.getElementById('crosshair');
+        const scoreInfoEl = document.getElementById('score-info');
+        const ammoInfoEl = document.getElementById('ammo-info');
+        const zombieCubeMaterial = new THREE.MeshStandardMaterial({ color: 0x00dd00 }); 
+        const houseBodyMaterial = new THREE.MeshStandardMaterial({ color: 0x9B7653 }); 
+        const houseRoofMaterial = new THREE.MeshStandardMaterial({ color: 0x703628 }); 
+        const platformMaterial = new THREE.MeshStandardMaterial({ color: 0x907050 });
+
+        // --- init() y otras funciones helper (sin cambios) ---
+        function init() {
+            console.log("Juego: init()");
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x75b2dd);
+            scene.fog = new THREE.Fog(0x75b2dd, 20, 80);
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.y = playerHeight; 
+            playerBody = new THREE.Object3D(); 
+            playerBody.position.set(0, groundYLevel, 5);
+            playerBody.add(camera); 
+            scene.add(playerBody);
+            playerBody.userData.aabb = new THREE.Box3();
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.body.appendChild(renderer.domElement);
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.75);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.65);
+            directionalLight.position.set(25, 35, 20);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.set(2048, 2048);
+            directionalLight.shadow.camera.near = 0.5; directionalLight.shadow.camera.far = 100;
+            directionalLight.shadow.camera.left = -40; directionalLight.shadow.camera.right = 40;
+            directionalLight.shadow.camera.top = 40; directionalLight.shadow.camera.bottom = -40;
+            scene.add(directionalLight);
+            const groundMeshGeometry = new THREE.PlaneGeometry(120, 120);
+            const groundMeshMaterial = new THREE.MeshStandardMaterial({ color: 0x4a6b3c, side: THREE.DoubleSide });
+            const groundMesh = new THREE.Mesh(groundMeshGeometry, groundMeshMaterial);
+            groundMesh.rotation.x = -Math.PI / 2;
+            groundMesh.position.y = groundYLevel - 0.01;
+            groundMesh.receiveShadow = true;
+            scene.add(groundMesh);
+            createEnvironment();
+            startButton.addEventListener('click', requestPointerLockAndStart);
+            restartButton.addEventListener('click', requestPointerLockAndStart);
+            document.addEventListener('pointerlockchange', onPointerLockChange);
+            document.addEventListener('mozpointerlockchange', onPointerLockChange); 
+            document.addEventListener('keydown', onKeyDown);
+            document.addEventListener('keyup', onKeyUp);
+            renderer.domElement.addEventListener('click', () => { if (pointerLocked && gameRunning) { shoot(); }});
+            document.addEventListener('mousemove', onMouseMove);
+            animate();
+            showUiScreen('tutorial'); 
+            console.log("Juego: init() completado.");
+        }
+        function createHouse(x, yBase, z, width, bodyHeight, depth, roofHeight = 1, roofOverhang = 0.5) { const bodyGeo = new THREE.BoxGeometry(width, bodyHeight, depth); const bodyMesh = new THREE.Mesh(bodyGeo, houseBodyMaterial); bodyMesh.position.set(x, yBase + bodyHeight / 2, z); bodyMesh.castShadow = true; bodyMesh.receiveShadow = true; scene.add(bodyMesh); environmentObjects.push({ mesh: bodyMesh, type: 'house_body', aabb: new THREE.Box3().setFromObject(bodyMesh) }); const roofGeo = new THREE.BoxGeometry(width + roofOverhang * 2, roofHeight, depth + roofOverhang * 2); const roofMesh = new THREE.Mesh(roofGeo, houseRoofMaterial); roofMesh.position.set(x, yBase + bodyHeight + roofHeight / 2, z); roofMesh.castShadow = true; roofMesh.receiveShadow = true; scene.add(roofMesh); environmentObjects.push({ mesh: roofMesh, type: 'platform', aabb: new THREE.Box3().setFromObject(roofMesh) }); }
+        function createPlatform(x, yBase, z, width, height, depth) { const platGeo = new THREE.BoxGeometry(width, height, depth); const platMesh = new THREE.Mesh(platGeo, platformMaterial); platMesh.position.set(x, yBase + height/2, z); platMesh.castShadow = true; platMesh.receiveShadow = true; scene.add(platMesh); environmentObjects.push({ mesh: platMesh, type: 'platform', aabb: new THREE.Box3().setFromObject(platMesh) });}
+        function createEnvironment() { environmentObjects.length = 0; createHouse(-12, groundYLevel, -12, 8, 5, 10, 1.5, 0.6); createHouse(15, groundYLevel, -8, 10, 6, 8, 1, 0.5); createHouse(8, groundYLevel, 18, 7, 4, 7, 1.2, 0.4); createPlatform(-5, 2 + groundYLevel, 2, 7, 0.5, 5); createPlatform(2, 3.5 + groundYLevel, -10, 6, 0.5, 6); createPlatform(10, 1.5 + groundYLevel, 10, 5, 0.5, 8); }
+        function showUiScreen(screenName) { console.log(`Juego: showUiScreen(${screenName})`); gameRunning = false; document.body.style.cursor = 'default'; tutorialEl.style.display = screenName === 'tutorial' ? 'block' : 'none'; gameOverEl.style.display = screenName === 'gameOver' ? 'block' : 'none'; crosshairEl.style.display = 'none'; scoreInfoEl.style.display = 'none'; ammoInfoEl.style.display = 'none'; if (pointerLocked) { document.exitPointerLock = document.exitPointerLock || document.mozExitPointerLock; document.exitPointerLock(); }}
+        function requestPointerLockAndStart() { console.log("Juego: requestPointerLockAndStart() - pointerLocked:", pointerLocked); if (!pointerLocked) { renderer.domElement.requestPointerLock = renderer.domElement.requestPointerLock || renderer.domElement.mozRequestPointerLock; renderer.domElement.requestPointerLock(); } else if (!gameRunning && pointerLocked) { startGameFlow(); }}
+        function onPointerLockChange() { if (document.pointerLockElement === renderer.domElement || document.mozPointerLockElement === renderer.domElement) { if (!pointerLocked) { console.log('Juego: Pointer Locked'); pointerLocked = true; document.body.style.cursor = 'none'; if (!gameRunning) { startGameFlow(); } else { resumeGame(); }}} else { if (pointerLocked) { console.log('Juego: Pointer Unlocked'); pointerLocked = false; document.body.style.cursor = 'default'; if (gameRunning) { showUiScreen('tutorial'); }}}}
+        function startGameFlow() { console.log("Juego: startGameFlow()"); gameRunning = true; score = 0; currentAmmo = maxAmmo; zombieSpeed = 0.022; updateScoreDisplay(); updateAmmoDisplay(); tutorialEl.style.display = 'none'; gameOverEl.style.display = 'none'; crosshairEl.style.display = 'block'; scoreInfoEl.style.display = 'block'; ammoInfoEl.style.display = 'block'; playerBody.position.set(2, groundYLevel, 8); playerVelocityY = 0; isJumping = false; onPlatform = null; euler.set(0, Math.PI, 0); camera.quaternion.setFromEuler(euler); bullets.forEach(b => scene.remove(b)); bullets = []; zombies.forEach(z => scene.remove(z.mesh)); zombies = []; spawnZombie(); console.log("Juego: Juego iniciado/reiniciado.");}
+        function resumeGame() { console.log("Juego: resumeGame()"); gameRunning = true; tutorialEl.style.display = 'none'; gameOverEl.style.display = 'none'; crosshairEl.style.display = 'block'; scoreInfoEl.style.display = 'block'; ammoInfoEl.style.display = 'block'; document.body.style.cursor = 'none'; }
+        function spawnZombie() { const zombieGeometry = new THREE.BoxGeometry(zombieCubeSize, zombieBodyHeight, zombieCubeSize); const newZombieMesh = new THREE.Mesh(zombieGeometry, zombieCubeMaterial); newZombieMesh.castShadow = true; newZombieMesh.receiveShadow = true; const angle = Math.random() * Math.PI * 2; const radius = 20 + Math.random() * 15; let spawnY = zombieBodyHeight / 2 + groundYLevel; newZombieMesh.position.set( playerBody.position.x + Math.cos(angle) * radius, spawnY, playerBody.position.z + Math.sin(angle) * radius ); scene.add(newZombieMesh); zombies.push({ mesh: newZombieMesh, health: initialZombieHealth, aabb: new THREE.Box3().setFromObject(newZombieMesh) });}
+        function onKeyDown(event) { if (!pointerLocked || !gameRunning) return; switch (event.key.toLowerCase()) { case 'w': moveState.forward = 1; break; case 's': moveState.backward = 1; break; case 'a': moveState.left = 1; break; case 'd': moveState.right = 1; break; case ' ': if (!isJumping) { playerVelocityY = jumpForce; isJumping = true; onPlatform = null; } break;}}
+        function onKeyUp(event) { if (!pointerLocked || !gameRunning) return; switch (event.key.toLowerCase()) { case 'w': moveState.forward = 0; break; case 's': moveState.backward = 0; break; case 'a': moveState.left = 0; break; case 'd': moveState.right = 0; break;}}
+        function onMouseMove(event) { if (!pointerLocked || !gameRunning) return; const movementX = event.movementX || event.mozMovementX || 0; const movementY = event.movementY || event.mozMovementY || 0; euler.y -= movementX * playerLookSpeed; euler.x -= movementY * playerLookSpeed; euler.x = Math.max(-PI_2, Math.min(PI_2, euler.x)); camera.quaternion.setFromEuler(euler);}
+        function shoot() { if (!gameRunning || currentAmmo <= 0) return; currentAmmo--; updateAmmoDisplay(); const bulletGeometry = new THREE.SphereGeometry(0.08, 6, 6); const bulletMaterial = new THREE.MeshStandardMaterial({ color: 0xff4500, emissive: 0xff4500 }); const bullet = new THREE.Mesh(bulletGeometry, bulletMaterial); camera.getWorldPosition(bullet.position); const direction = new THREE.Vector3(); camera.getWorldDirection(direction); bullet.userData.velocity = direction.multiplyScalar(bulletSpeed); bullet.position.addScaledVector(bullet.userData.velocity.clone().normalize(), playerRadius + 0.2); scene.add(bullet); bullets.push(bullet); if (currentAmmo === 0) { setTimeout(() => { currentAmmo = maxAmmo; updateAmmoDisplay(); }, 1800); }}
+        function updatePlayerAABB() { const center = playerBody.position.clone(); center.y += playerHeight / 2; const size = new THREE.Vector3(playerRadius * 2, playerHeight, playerRadius * 2); playerBody.userData.aabb.setFromCenterAndSize(center, size);}
+        
+        const playerDisplacement = new THREE.Vector3();
+        const forwardDirection = new THREE.Vector3();
+        const sideDirection = new THREE.Vector3();
+
+        function updatePlayerMovement() {
+            if (!gameRunning || !pointerLocked) return;
+            const oldYPosition = playerBody.position.y;
+
+            playerBody.position.y += playerVelocityY; 
+            const currentGround = onPlatform ? onPlatform.aabb.max.y : groundYLevel;
+            if (playerBody.position.y > currentGround || playerVelocityY > 0) {
+                 playerVelocityY -= gravity;
+            } else { 
+                playerVelocityY = 0; playerBody.position.y = currentGround; isJumping = false; 
+            }
+            updatePlayerAABB(); 
+
+            let landedThisFrame = false;
+            if (playerVelocityY < 0) { 
+                for (const obj of environmentObjects) {
+                    if (obj.type === 'platform' || obj.type === 'house_body') { 
+                        if (playerBody.userData.aabb.intersectsBox(obj.aabb)) {
+                            if (oldYPosition >= obj.aabb.max.y -0.05 && playerBody.position.y <= obj.aabb.max.y + 0.05) {
+                                playerBody.position.y = obj.aabb.max.y; playerVelocityY = 0; isJumping = false; onPlatform = obj; landedThisFrame = true; break; 
+                            }
+                        }
+                    }
+                }
+            }
+             if (!landedThisFrame && playerBody.position.y < groundYLevel && playerVelocityY <=0) {
+                playerBody.position.y = groundYLevel; playerVelocityY = 0; isJumping = false; onPlatform = null;
+            }
+            updatePlayerAABB(); 
+
+            playerDisplacement.set(0,0,0);
+            camera.getWorldDirection(forwardDirection);
+            forwardDirection.y = 0; forwardDirection.normalize();
+            sideDirection.crossVectors(camera.up, forwardDirection).normalize();
+
+            if (moveState.forward) playerDisplacement.add(forwardDirection);
+            if (moveState.backward) playerDisplacement.sub(forwardDirection);
+            
+            // ***** CONTROL LATERAL INVERTIDO *****
+            if (moveState.left) playerDisplacement.add(sideDirection);    // 'A' MUEVE A LA DERECHA
+            if (moveState.right) playerDisplacement.sub(sideDirection); // 'D' MUEVE A LA IZQUIERDA
+            // ***** FIN DEL CAMBIO *****
+            
+            if (playerDisplacement.lengthSq() > 0) {
+                playerDisplacement.normalize().multiplyScalar(playerSpeed);
+            }
+            
+            const originalPosition = playerBody.position.clone();
+            
+            playerBody.position.x += playerDisplacement.x;
+            updatePlayerAABB(); 
+            for(const obj of environmentObjects) {
+                if(playerBody.userData.aabb.intersectsBox(obj.aabb)) {
+                    playerBody.position.x = originalPosition.x; updatePlayerAABB(); break;
+                }
+            }
+
+            playerBody.position.z += playerDisplacement.z;
+            updatePlayerAABB(); 
+            for(const obj of environmentObjects) {
+                if(playerBody.userData.aabb.intersectsBox(obj.aabb)) {
+                    playerBody.position.z = originalPosition.z; updatePlayerAABB(); break;
+                }
+            }
+        }
+        
+        function updateGameLogic() {
+            if (!gameRunning || !pointerLocked) return;
+            updatePlayerMovement();
+
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const bullet = bullets[i];
+                bullet.position.add(bullet.userData.velocity);
+                if (bullet.position.distanceTo(playerBody.position) > 150) {
+                    scene.remove(bullet); bullets.splice(i, 1);
+                }
+            }
+
+            for (let i = zombies.length - 1; i >= 0; i--) {
+                const zombieObj = zombies[i];
+                if (!zombieObj || !zombieObj.mesh) { zombies.splice(i,1); continue; } 
+                
+                const zombieMesh = zombieObj.mesh;
+                zombieObj.aabb.setFromObject(zombieMesh); 
+
+                const directionToPlayer = new THREE.Vector3().subVectors(playerBody.position, zombieMesh.position);
+                directionToPlayer.y = 0; 
+                if (directionToPlayer.lengthSq() > 0.001) directionToPlayer.normalize();
+                else directionToPlayer.set(0,0,0); 
+                
+                const movementStep = directionToPlayer.clone().multiplyScalar(zombieSpeed);
+                let canZombieMove = true;
+                if (movementStep.lengthSq() > 0) {
+                    const nextZombiePos = zombieMesh.position.clone().add(movementStep);
+                    const zombieSize = new THREE.Vector3(zombieCubeSize, zombieBodyHeight, zombieCubeSize); 
+                    const nextZombieAABB = new THREE.Box3().setFromCenterAndSize(nextZombiePos, zombieSize);
+
+                    for(const envObj of environmentObjects){
+                        if(nextZombieAABB.intersectsBox(envObj.aabb)){
+                            canZombieMove = false;
+                            zombieMesh.rotation.y += (Math.random() - 0.5) * 0.5; 
+                            break;
+                        }
+                    }
+                }
+
+                if(canZombieMove && movementStep.lengthSq() > 0) {
+                    zombieMesh.position.add(movementStep);
+                }
+                
+                zombieMesh.lookAt(playerBody.position.x, zombieMesh.position.y, playerBody.position.z);
+                updatePlayerAABB(); 
+
+                if (playerBody.userData.aabb.intersectsBox(zombieObj.aabb)) {
+                     endGame("¡Un Zombie te atrapó!"); return;
+                }
+
+                for (let j = bullets.length - 1; j >= 0; j--) {
+                    const bullet = bullets[j];
+                    const bulletAABB = new THREE.Box3().setFromObject(bullet); 
+                    if (bulletAABB.intersectsBox(zombieObj.aabb)) {
+                        scene.remove(bullet); bullets.splice(j, 1);
+                        zombieObj.health--;
+                        if (zombieObj.health <= 0) {
+                            scene.remove(zombieMesh); zombies.splice(i, 1);
+                            score += 10; updateScoreDisplay();
+                            spawnZombie();
+                            zombieSpeed = Math.min(zombieSpeed + 0.0035, 0.08); 
+                        } else {
+                            zombieMesh.material.color.setHex(0xff0000); 
+                            setTimeout(() => { 
+                                if (zombieMesh.material) { 
+                                    zombieMesh.material.color.setHex(0x00dd00); 
+                                }
+                            }, 120);
+                        }
+                        break; 
+                    }
+                }
+            }
+        }
+        
+        function updateScoreDisplay() { scoreInfoEl.innerText = `Puntuación: ${score}`; }
+        function updateAmmoDisplay() { ammoInfoEl.innerText = `Balas: ${currentAmmo}/${maxAmmo}`;}
+        function endGame(reason) { console.log(`Juego: endGame - ${reason}`); gameRunning = false; finalScoreEl.innerText = score; showUiScreen('gameOver');}
+        function animate() { requestAnimationFrame(animate); if (gameRunning && pointerLocked) { updateGameLogic(); } renderer.render(scene, camera);}
+        window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);});
+        
+        init();
+    </script>
+</body>
+</html>
